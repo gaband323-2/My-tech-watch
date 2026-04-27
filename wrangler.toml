@@ -20,7 +20,7 @@ DIGEST_SUBJECT = "Gaband323 Tech Watch Update"
 [[d1_databases]]
 binding = "DB"
 database_name = "gaband-tech-watch-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "be803a99-5fb0-4970-a085-562c75417253"
 
 [triggers]
 crons = ["*/30 * * * *", "0 15 * * *"]
