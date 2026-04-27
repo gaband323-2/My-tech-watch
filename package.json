@@ -1,0 +1,13 @@
+{
+  "name": "gaband323-tech-watch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "node --check index.js"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}

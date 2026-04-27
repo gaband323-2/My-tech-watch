@@ -1,0 +1,26 @@
+name = "gaband323-tech-watch"
+main = "index.js"
+compatibility_date = "2026-04-27"
+workers_dev = false
+
+routes = [
+  { pattern = "tech.gaband323.dev", custom_domain = true }
+]
+
+[observability]
+enabled = true
+
+[vars]
+SITE_NAME = "Gaband323 Tech Watch"
+SITE_ORIGIN = "https://tech.gaband323.dev"
+ADMIN_EMAILS = "gaband323@gmail.com"
+EMAIL_FROM = "Gaband323 Tech Watch <updates@tech.gaband323.dev>"
+DIGEST_SUBJECT = "Gaband323 Tech Watch Update"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gaband-tech-watch-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[triggers]
+crons = ["*/30 * * * *", "0 15 * * *"]
