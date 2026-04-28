@@ -256,14 +256,16 @@ async function ensureDatabase(env) {
   `).run();
 
   await env.DB.prepare(`
-  INSERT INTO sources (id, name, url, category, enabled)
-  VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT(url) DO UPDATE SET
-    id = excluded.id,
-    name = excluded.name,
-    category = excluded.category,
-    enabled = excluded.enabled
-`).bind(source.id, source.name, source.url, source.category, source.enabled).run();
+    CREATE TABLE IF NOT EXISTS service_status (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'Unknown',
+      indicator TEXT NOT NULL DEFAULT 'unknown',
+      url TEXT,
+      checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw TEXT
+    )
+  `).run();
 }
 
 async function ensurePresetAdmin(env) {
@@ -290,8 +292,18 @@ async function seedDefaultSources(env) {
     await env.DB.prepare(`
       INSERT INTO sources (id, name, url, category, enabled)
       VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO NOTHING
-    `).bind(source.id, source.name, source.url, source.category, source.enabled).run();
+      ON CONFLICT(url) DO UPDATE SET
+        id = excluded.id,
+        name = excluded.name,
+        category = excluded.category,
+        enabled = excluded.enabled
+    `).bind(
+      source.id,
+      source.name,
+      source.url,
+      source.category,
+      source.enabled
+    ).run();
   }
 }
 
@@ -343,9 +355,6 @@ async function home(request, env) {
 
   const statuses = await getStatuses(env);
 
-  const postCards = renderPostCards(posts.results || []);
-  const statusCards = renderStatusCards(statuses);
-
   return htmlPage("Home", `
     <section class="hero">
       <p class="eyebrow">Models · Deals · Status</p>
@@ -360,12 +369,12 @@ async function home(request, env) {
 
     <section class="panel">
       <h2>Service status</h2>
-      <div class="status-grid">${statusCards}</div>
+      <div class="status-grid">${renderStatusCards(statuses)}</div>
     </section>
 
     <section class="panel">
       <h2>Latest watch posts</h2>
-      <div class="grid">${postCards || `<p>No posts yet. Log into admin and seed starter content.</p>`}</div>
+      <div class="grid">${renderPostCards(posts.results || []) || `<p>No posts yet. Log into admin and seed starter content.</p>`}</div>
     </section>
   `, env);
 }
@@ -711,9 +720,9 @@ async function adminSaveSource(request, env) {
   await env.DB.prepare(`
     INSERT INTO sources (id, name, url, category, enabled)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
+    ON CONFLICT(url) DO UPDATE SET
+      id = excluded.id,
       name = excluded.name,
-      url = excluded.url,
       category = excluded.category,
       enabled = excluded.enabled
   `).bind(id, name, url, category, enabled).run();
@@ -1437,4 +1446,4 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
-    }
+}
