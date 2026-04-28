@@ -138,6 +138,13 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
+      const publicPaths = ["/", "/login", "/signup", "/health"];
+      const isPublicApi = path.startsWith("/api/");
+
+      if (!env.__viewer && !publicPaths.includes(path) && !isPublicApi) {
+        return authPromptPage(env);
+      }
+
       if (path === "/") return home(request, env);
       if (path === "/health") return json({ ok: true, site: siteName(env) });
 
@@ -148,6 +155,7 @@ export default {
       if (path === "/subscribe") return subscribePage(request, env);
 
       if (path === "/login") return loginPage(request, env);
+      if (path === "/signup") return signupPage(request, env);
       if (path === "/logout") return logout(request, env);
 
       if (path === "/admin") return adminPage(request, env);
@@ -167,6 +175,7 @@ export default {
       return htmlPage("Not Found", `<section class="panel"><h1>404</h1><p>That page does not exist.</p></section>`, env, 404);
     } catch (err) {
       console.error(err);
+
       return htmlPage(
         "Error",
         `<section class="panel"><h1>Something broke</h1><p class="error">${escapeHtml(err.message || String(err))}</p><pre>${escapeHtml(err.stack || "")}</pre></section>`,
@@ -232,7 +241,6 @@ async function ensureDatabase(env) {
 
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_posts_updated_at ON posts(updated_at)`).run();
-  await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_url ON posts(url)`).run();
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS sources (
@@ -326,6 +334,7 @@ async function seedStarterContent(env) {
         content = excluded.content,
         url = excluded.url,
         pinned = excluded.pinned,
+        source_name = excluded.source_name,
         updated_at = CURRENT_TIMESTAMP
     `).bind(
       id,
@@ -345,7 +354,25 @@ async function seedStarterContent(env) {
   return { ok: true, inserted, updated };
 }
 
+function authPromptPage(env) {
+  return htmlPage("Sign in required", `
+    <section class="hero">
+      <p class="eyebrow">Private dashboard</p>
+      <h1>Sign in to access ${escapeHtml(siteName(env))}</h1>
+      <p>This site is for registered users. Create an account or sign in to view models, deals, status pages, posts, and subscriptions.</p>
+      <div class="actions">
+        <a class="button" href="/signup">Create account</a>
+        <a class="button secondary" href="/login">Sign in</a>
+      </div>
+    </section>
+  `, env, 401);
+}
+
 async function home(request, env) {
+  if (!env.__viewer) {
+    return authPromptPage(env);
+  }
+
   const posts = await env.DB.prepare(`
     SELECT *
     FROM posts
@@ -487,6 +514,8 @@ function subscribeForm(error = "") {
 }
 
 async function loginPage(request, env) {
+  if (env.__viewer) return redirect("/");
+
   if (request.method === "POST") {
     const form = await request.formData();
     const email = String(form.get("email") || "").trim().toLowerCase();
@@ -498,7 +527,7 @@ async function loginPage(request, env) {
       return htmlPage("Login", loginForm("Invalid email or password."), env, 401);
     }
 
-    return createSession(env, user.id, "/admin");
+    return createSession(env, user.id, user.role === "admin" ? "/admin" : "/");
   }
 
   return htmlPage("Login", loginForm(""), env);
@@ -516,6 +545,75 @@ function loginForm(error = "") {
         <input name="password" type="password" required>
         <button>Login</button>
       </form>
+      <p>No account yet? <a href="/signup">Create one</a>.</p>
+    </section>
+  `;
+}
+
+async function signupPage(request, env) {
+  if (env.__viewer) return redirect("/");
+
+  if (request.method === "POST") {
+    const form = await request.formData();
+
+    const email = String(form.get("email") || "").trim().toLowerCase();
+    const password = String(form.get("password") || "");
+    const confirmPassword = String(form.get("confirm_password") || "");
+
+    if (!email || !email.includes("@")) {
+      return htmlPage("Create account", signupForm("Enter a valid email address."), env, 400);
+    }
+
+    if (!password || password.length < 8) {
+      return htmlPage("Create account", signupForm("Password must be at least 8 characters."), env, 400);
+    }
+
+    if (password !== confirmPassword) {
+      return htmlPage("Create account", signupForm("Passwords do not match."), env, 400);
+    }
+
+    const existing = await env.DB.prepare(`
+      SELECT id FROM users WHERE email = ?
+    `).bind(email).first();
+
+    if (existing) {
+      return htmlPage("Create account", signupForm("That email already has an account. Try signing in."), env, 400);
+    }
+
+    const role = isAdminEmail(env, email) ? "admin" : "user";
+    const id = crypto.randomUUID();
+    const hash = await hashPassword(password);
+
+    await env.DB.prepare(`
+      INSERT INTO users (id, email, password_hash, role)
+      VALUES (?, ?, ?, ?)
+    `).bind(id, email, hash, role).run();
+
+    return createSession(env, id, role === "admin" ? "/admin" : "/");
+  }
+
+  return htmlPage("Create account", signupForm(""), env);
+}
+
+function signupForm(error = "") {
+  return `
+    <section class="panel auth">
+      <h1>Create account</h1>
+      <p>Sign up to access the Tech Watch dashboard.</p>
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+      <form method="POST" action="/signup" class="stack">
+        <label>Email</label>
+        <input name="email" type="email" required>
+
+        <label>Password</label>
+        <input name="password" type="password" minlength="8" required>
+
+        <label>Confirm password</label>
+        <input name="confirm_password" type="password" minlength="8" required>
+
+        <button>Create account</button>
+      </form>
+      <p>Already have an account? <a href="/login">Sign in</a>.</p>
     </section>
   `;
 }
@@ -1276,12 +1374,12 @@ function htmlPage(title, body, env, status = 200) {
   const nav = `
     <nav>
       <a href="/">Home</a>
-      <a href="/models">Models</a>
-      <a href="/deals">Deals</a>
-      <a href="/status">Status</a>
-      <a href="/subscribe">Subscribe</a>
+      ${viewer ? `<a href="/models">Models</a>` : ""}
+      ${viewer ? `<a href="/deals">Deals</a>` : ""}
+      ${viewer ? `<a href="/status">Status</a>` : ""}
+      ${viewer ? `<a href="/subscribe">Subscribe</a>` : ""}
       ${viewer?.role === "admin" ? `<a href="/admin">Admin</a>` : ""}
-      ${viewer ? `<a href="/logout">Logout</a>` : `<a href="/login">Login</a>`}
+      ${viewer ? `<a href="/logout">Logout</a>` : `<a href="/login">Login</a> <a href="/signup">Sign up</a>`}
     </nav>
   `;
 
@@ -1391,6 +1489,14 @@ function label(value) {
   return v.charAt(0).toUpperCase() + v.slice(1);
 }
 
+function isAdminEmail(env, email) {
+  return String(env.ADMIN_EMAILS || "")
+    .split(",")
+    .map(x => x.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(String(email || "").toLowerCase());
+}
+
 function formatDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -1446,4 +1552,4 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
-}
+                                    }
