@@ -298,6 +298,7 @@ async function safeAlter(env, sql) {
     await env.DB.prepare(sql).run();
   } catch (e) {
     const message = String(e.message || e);
+
     if (
       message.includes("duplicate column name") ||
       message.includes("already exists")
@@ -1030,6 +1031,14 @@ async function syncServiceStatuses(env) {
       const data = await res.json();
       const normalized = normalizeStatus(service, data);
 
+      const existing = await env.DB.prepare(`
+        SELECT id FROM service_status
+        WHERE id = ? OR name = ?
+        LIMIT 1
+      `).bind(service.id, service.name).first();
+
+      const finalId = existing?.id || service.id;
+
       await env.DB.prepare(`
         INSERT INTO service_status (id, name, status, indicator, url, checked_at, raw)
         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
@@ -1041,7 +1050,7 @@ async function syncServiceStatuses(env) {
           checked_at = CURRENT_TIMESTAMP,
           raw = excluded.raw
       `).bind(
-        service.id,
+        finalId,
         service.name,
         normalized.status,
         normalized.indicator,
@@ -1053,16 +1062,26 @@ async function syncServiceStatuses(env) {
     } catch (e) {
       failed.push({ service: service.name, error: e.message });
 
+      const existing = await env.DB.prepare(`
+        SELECT id FROM service_status
+        WHERE id = ? OR name = ?
+        LIMIT 1
+      `).bind(service.id, service.name).first();
+
+      const finalId = existing?.id || service.id;
+
       await env.DB.prepare(`
         INSERT INTO service_status (id, name, status, indicator, url, checked_at, raw)
         VALUES (?, ?, 'Unknown', 'unknown', ?, CURRENT_TIMESTAMP, ?)
         ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
           status = 'Unknown',
           indicator = 'unknown',
+          url = excluded.url,
           checked_at = CURRENT_TIMESTAMP,
           raw = excluded.raw
       `).bind(
-        service.id,
+        finalId,
         service.name,
         service.homepage,
         JSON.stringify({ error: e.message })
@@ -1597,4 +1616,4 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
-      }
+  }
