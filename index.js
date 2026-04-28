@@ -256,16 +256,14 @@ async function ensureDatabase(env) {
   `).run();
 
   await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS service_status (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL DEFAULT 'Unknown',
-      indicator TEXT NOT NULL DEFAULT 'unknown',
-      url TEXT,
-      checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      raw TEXT
-    )
-  `).run();
+  INSERT INTO sources (id, name, url, category, enabled)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(url) DO UPDATE SET
+    id = excluded.id,
+    name = excluded.name,
+    category = excluded.category,
+    enabled = excluded.enabled
+`).bind(source.id, source.name, source.url, source.category, source.enabled).run();
 }
 
 async function ensurePresetAdmin(env) {
