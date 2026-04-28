@@ -239,8 +239,17 @@ async function ensureDatabase(env) {
     )
   `).run();
 
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN tags TEXT`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN summary TEXT`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN content TEXT`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN url TEXT`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN source_name TEXT`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+  await safeAlter(env, `ALTER TABLE posts ADD COLUMN updated_at TEXT`);
+
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_posts_updated_at ON posts(updated_at)`).run();
+  await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_url ON posts(url)`).run();
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS sources (
@@ -252,6 +261,9 @@ async function ensureDatabase(env) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `).run();
+
+  await safeAlter(env, `ALTER TABLE sources ADD COLUMN category TEXT NOT NULL DEFAULT 'general'`);
+  await safeAlter(env, `ALTER TABLE sources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`);
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS subscriptions (
@@ -274,6 +286,27 @@ async function ensureDatabase(env) {
       raw TEXT
     )
   `).run();
+
+  await safeAlter(env, `ALTER TABLE service_status ADD COLUMN indicator TEXT NOT NULL DEFAULT 'unknown'`);
+  await safeAlter(env, `ALTER TABLE service_status ADD COLUMN url TEXT`);
+  await safeAlter(env, `ALTER TABLE service_status ADD COLUMN checked_at TEXT`);
+  await safeAlter(env, `ALTER TABLE service_status ADD COLUMN raw TEXT`);
+}
+
+async function safeAlter(env, sql) {
+  try {
+    await env.DB.prepare(sql).run();
+  } catch (e) {
+    const message = String(e.message || e);
+    if (
+      message.includes("duplicate column name") ||
+      message.includes("already exists")
+    ) {
+      return;
+    }
+
+    throw e;
+  }
 }
 
 async function ensurePresetAdmin(env) {
@@ -321,29 +354,29 @@ async function seedStarterContent(env) {
 
   for (const post of STARTER_POSTS) {
     const id = slugify(post.title);
-    const existing = await env.DB.prepare(`SELECT id FROM posts WHERE id = ?`).bind(id).first();
+    const existing = await env.DB.prepare(`SELECT id FROM posts WHERE url = ?`).bind(normalizeUrl(post.url)).first();
+    const finalId = existing?.id || id;
 
     await env.DB.prepare(`
       INSERT INTO posts (id, title, category, tags, summary, content, url, pinned, source_name, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Starter Content', CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET
+      ON CONFLICT(url) DO UPDATE SET
         title = excluded.title,
         category = excluded.category,
         tags = excluded.tags,
         summary = excluded.summary,
         content = excluded.content,
-        url = excluded.url,
         pinned = excluded.pinned,
         source_name = excluded.source_name,
         updated_at = CURRENT_TIMESTAMP
     `).bind(
-      id,
+      finalId,
       post.title,
       post.category,
       post.tags,
       post.summary,
       post.summary,
-      post.url,
+      normalizeUrl(post.url),
       post.pinned || 0
     ).run();
 
@@ -767,7 +800,7 @@ async function adminSavePost(request, env) {
   const tags = String(form.get("tags") || "").trim();
   const summary = String(form.get("summary") || "").trim();
   const content = String(form.get("content") || summary).trim();
-  const url = String(form.get("url") || "").trim();
+  const url = normalizeUrl(String(form.get("url") || "").trim());
   const pinned = form.get("pinned") === "1" ? 1 : 0;
 
   await env.DB.prepare(`
@@ -925,19 +958,26 @@ async function syncSources(env) {
       const items = parseRssItems(xml).slice(0, 10);
 
       for (const item of items) {
-        const id = stableId(item.url || item.title);
-        const existing = await env.DB.prepare(`SELECT id FROM posts WHERE id = ?`).bind(id).first();
+        if (!item.url || !item.title) continue;
+
+        const existing = await env.DB.prepare(`
+          SELECT id FROM posts WHERE url = ?
+        `).bind(item.url).first();
+
+        const id = existing?.id || stableId(item.url || item.title);
 
         await env.DB.prepare(`
-          INSERT INTO posts (id, title, category, tags, summary, content, url, source_name, pinned, created_at, updated_at)
+          INSERT INTO posts (
+            id, title, category, tags, summary, content,
+            url, source_name, pinned, created_at, updated_at
+          )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(id) DO UPDATE SET
+          ON CONFLICT(url) DO UPDATE SET
             title = excluded.title,
             category = excluded.category,
             tags = excluded.tags,
             summary = excluded.summary,
             content = excluded.content,
-            url = excluded.url,
             source_name = excluded.source_name,
             updated_at = CURRENT_TIMESTAMP
         `).bind(
@@ -1530,6 +1570,11 @@ function stableId(input) {
   return `item-${Math.abs(hash)}`;
 }
 
+function normalizeUrl(value) {
+  const text = String(value || "").trim();
+  return text ? text : null;
+}
+
 function getCookie(request, name) {
   const cookie = request.headers.get("Cookie") || "";
 
@@ -1552,4 +1597,4 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
-                                    }
+      }
