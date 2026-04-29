@@ -43,42 +43,59 @@ const STATUS_SERVICES = [
     id: "cloudflare",
     name: "Cloudflare",
     type: "statuspage",
-    url: "https://www.cloudflarestatus.com/api/v2/summary.json",
+    urls: [
+      "https://www.cloudflarestatus.com/api/v2/summary.json",
+      "https://www.cloudflarestatus.com/api/v2/status.json"
+    ],
     homepage: "https://www.cloudflarestatus.com"
   },
   {
     id: "discord",
     name: "Discord",
     type: "statuspage",
-    url: "https://discordstatus.com/api/v2/summary.json",
+    urls: [
+      "https://discordstatus.com/api/v2/summary.json",
+      "https://discordstatus.com/api/v2/status.json"
+    ],
     homepage: "https://discordstatus.com"
   },
   {
     id: "github",
     name: "GitHub",
     type: "statuspage",
-    url: "https://www.githubstatus.com/api/v2/summary.json",
+    urls: [
+      "https://www.githubstatus.com/api/v2/summary.json",
+      "https://www.githubstatus.com/api/v2/status.json"
+    ],
     homepage: "https://www.githubstatus.com"
   },
   {
     id: "openai",
     name: "OpenAI",
     type: "statuspage",
-    url: "https://status.openai.com/api/v2/summary.json",
+    urls: [
+      "https://status.openai.com/api/v2/summary.json",
+      "https://status.openai.com/api/v2/status.json"
+    ],
     homepage: "https://status.openai.com"
   },
   {
     id: "railway",
     name: "Railway",
     type: "railway",
-    url: "https://status.railway.com/summary.json",
+    urls: [
+      "https://status.railway.com/summary.json"
+    ],
     homepage: "https://status.railway.com"
   },
   {
     id: "roblox",
     name: "Roblox",
     type: "statuspage",
-    url: "https://status.roblox.com/api/v2/summary.json",
+    urls: [
+      "https://status.roblox.com/api/v2/summary.json",
+      "https://status.roblox.com/api/v2/status.json"
+    ],
     homepage: "https://status.roblox.com"
   }
 ];
@@ -148,11 +165,27 @@ export default {
       if (path === "/") return home(request, env);
       if (path === "/health") return json({ ok: true, site: siteName(env) });
 
-      if (path === "/models") return listingPage(request, env, "ai-models", "AI Model Watch", "No AI model watch posts yet.");
-      if (path === "/deals") return listingPage(request, env, "deal", "Dev Deals & Free-Tier Watch", "No dev deals & free-tier watch posts yet.");
-      if (path === "/status") return statusPage(request, env);
+      if (path === "/models") {
+        if (!userCan(env.__viewer, "models")) return accessDeniedPage(env, "AI Model Watch");
+        return listingPage(request, env, "ai-models", "AI Model Watch", "No AI model watch posts yet.");
+      }
+
+      if (path === "/deals") {
+        if (!userCan(env.__viewer, "deals")) return accessDeniedPage(env, "Dev Deals");
+        return listingPage(request, env, "deal", "Dev Deals & Free-Tier Watch", "No dev deals & free-tier watch posts yet.");
+      }
+
+      if (path === "/status") {
+        if (!userCan(env.__viewer, "status")) return accessDeniedPage(env, "Status Board");
+        return statusPage(request, env);
+      }
+
       if (path === "/post") return postPage(request, env);
-      if (path === "/subscribe") return subscribePage(request, env);
+
+      if (path === "/subscribe") {
+        if (!userCan(env.__viewer, "subscribe")) return accessDeniedPage(env, "Subscriptions");
+        return subscribePage(request, env);
+      }
 
       if (path === "/login") return loginPage(request, env);
       if (path === "/signup") return signupPage(request, env);
@@ -163,6 +196,8 @@ export default {
       if (path === "/admin/post/delete") return adminDeletePost(request, env);
       if (path === "/admin/source/save") return adminSaveSource(request, env);
       if (path === "/admin/source/delete") return adminDeleteSource(request, env);
+      if (path === "/admin/user/update") return adminUpdateUser(request, env);
+      if (path === "/admin/user/delete") return adminDeleteUser(request, env);
       if (path === "/admin/sync") return adminSync(request, env);
       if (path === "/admin/status/sync") return adminSyncStatus(request, env);
       if (path === "/admin/seed") return adminSeedContent(request, env);
@@ -213,6 +248,12 @@ async function ensureDatabase(env) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `).run();
+
+  await safeAlter(env, `ALTER TABLE users ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1`);
+  await safeAlter(env, `ALTER TABLE users ADD COLUMN can_models INTEGER NOT NULL DEFAULT 1`);
+  await safeAlter(env, `ALTER TABLE users ADD COLUMN can_deals INTEGER NOT NULL DEFAULT 1`);
+  await safeAlter(env, `ALTER TABLE users ADD COLUMN can_status INTEGER NOT NULL DEFAULT 1`);
+  await safeAlter(env, `ALTER TABLE users ADD COLUMN can_subscribe INTEGER NOT NULL DEFAULT 1`);
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -317,15 +358,27 @@ async function ensurePresetAdmin(env) {
   const existing = await env.DB.prepare(`SELECT id FROM users WHERE email = ?`).bind(email).first();
 
   if (existing) {
-    await env.DB.prepare(`UPDATE users SET role = 'admin' WHERE email = ?`).bind(email).run();
+    await env.DB.prepare(`
+      UPDATE users
+      SET role = 'admin',
+          is_enabled = 1,
+          can_models = 1,
+          can_deals = 1,
+          can_status = 1,
+          can_subscribe = 1
+      WHERE email = ?
+    `).bind(email).run();
     return;
   }
 
   const hash = await hashPassword(String(env.ADMIN_PRESET_PASSWORD));
 
   await env.DB.prepare(`
-    INSERT INTO users (id, email, password_hash, role)
-    VALUES (?, ?, ?, 'admin')
+    INSERT INTO users (
+      id, email, password_hash, role,
+      is_enabled, can_models, can_deals, can_status, can_subscribe
+    )
+    VALUES (?, ?, ?, 'admin', 1, 1, 1, 1, 1)
   `).bind(crypto.randomUUID(), email, hash).run();
 }
 
@@ -402,6 +455,17 @@ function authPromptPage(env) {
   `, env, 401);
 }
 
+function accessDeniedPage(env, sectionName = "this section") {
+  return htmlPage("Access denied", `
+    <section class="panel auth">
+      <h1>Access denied</h1>
+      <p>Your account does not currently have access to ${escapeHtml(sectionName)}.</p>
+      <p>An admin can change this from the admin panel.</p>
+      <p><a class="button" href="/">Back home</a></p>
+    </section>
+  `, env, 403);
+}
+
 async function home(request, env) {
   if (!env.__viewer) {
     return authPromptPage(env);
@@ -422,9 +486,9 @@ async function home(request, env) {
       <h1>${escapeHtml(siteName(env))}</h1>
       <p>Track AI model updates, developer free tiers, hosting deals, and platform outages.</p>
       <div class="actions">
-        <a class="button" href="/models">Models</a>
-        <a class="button secondary" href="/deals">Deals</a>
-        <a class="button secondary" href="/status">Status</a>
+        ${userCan(env.__viewer, "models") ? `<a class="button" href="/models">Models</a>` : ""}
+        ${userCan(env.__viewer, "deals") ? `<a class="button secondary" href="/deals">Deals</a>` : ""}
+        ${userCan(env.__viewer, "status") ? `<a class="button secondary" href="/status">Status</a>` : ""}
       </div>
     </section>
 
@@ -561,6 +625,10 @@ async function loginPage(request, env) {
       return htmlPage("Login", loginForm("Invalid email or password."), env, 401);
     }
 
+    if (Number(user.is_enabled ?? 1) !== 1 && user.role !== "admin") {
+      return htmlPage("Login", loginForm("Your account is disabled."), env, 403);
+    }
+
     return createSession(env, user.id, user.role === "admin" ? "/admin" : "/");
   }
 
@@ -619,8 +687,11 @@ async function signupPage(request, env) {
     const hash = await hashPassword(password);
 
     await env.DB.prepare(`
-      INSERT INTO users (id, email, password_hash, role)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO users (
+        id, email, password_hash, role,
+        is_enabled, can_models, can_deals, can_status, can_subscribe
+      )
+      VALUES (?, ?, ?, ?, 1, 1, 1, 1, 1)
     `).bind(id, email, hash, role).run();
 
     return createSession(env, id, role === "admin" ? "/admin" : "/");
@@ -683,6 +754,18 @@ async function adminPage(request, env) {
 
   const statuses = await getStatuses(env);
 
+  const users = await env.DB.prepare(`
+    SELECT id, email, role, created_at,
+           COALESCE(is_enabled, 1) AS is_enabled,
+           COALESCE(can_models, 1) AS can_models,
+           COALESCE(can_deals, 1) AS can_deals,
+           COALESCE(can_status, 1) AS can_status,
+           COALESCE(can_subscribe, 1) AS can_subscribe
+    FROM users
+    ORDER BY created_at DESC
+    LIMIT 200
+  `).all();
+
   return htmlPage("Admin", `
     <section class="hero">
       <p class="eyebrow">Admin</p>
@@ -693,6 +776,59 @@ async function adminPage(request, env) {
         <form method="POST" action="/admin/status/sync"><button>Sync service statuses</button></form>
         <form method="POST" action="/admin/seed"><button class="secondary">Seed starter content</button></form>
         <form method="POST" action="/admin/digest"><button class="secondary">Send digest</button></form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Users</h2>
+      <p class="meta">Manage site access, section permissions, subscription access, and admin role.</p>
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Access</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(users.results || []).map(u => `
+              <tr>
+                <td>
+                  <b>${escapeHtml(u.email)}</b>
+                  <br>
+                  <small>${escapeHtml(formatDateTime(u.created_at))}</small>
+                </td>
+                <td>
+                  <form method="POST" action="/admin/user/update" class="stack">
+                    <input type="hidden" name="id" value="${escapeAttr(u.id)}">
+                    <select name="role">
+                      <option value="user" ${u.role === "user" ? "selected" : ""}>User</option>
+                      <option value="admin" ${u.role === "admin" ? "selected" : ""}>Admin</option>
+                    </select>
+                </td>
+                <td>
+                    <label><input type="checkbox" name="is_enabled" value="1" ${Number(u.is_enabled) === 1 ? "checked" : ""}> Site access</label><br>
+                    <label><input type="checkbox" name="can_models" value="1" ${Number(u.can_models) === 1 ? "checked" : ""}> Models</label><br>
+                    <label><input type="checkbox" name="can_deals" value="1" ${Number(u.can_deals) === 1 ? "checked" : ""}> Deals</label><br>
+                    <label><input type="checkbox" name="can_status" value="1" ${Number(u.can_status) === 1 ? "checked" : ""}> Status</label><br>
+                    <label><input type="checkbox" name="can_subscribe" value="1" ${Number(u.can_subscribe) === 1 ? "checked" : ""}> Subscribe</label>
+                </td>
+                <td>
+                    <button>Save</button>
+                  </form>
+                  ${u.id !== user.id ? `
+                    <form method="POST" action="/admin/user/delete" onsubmit="return confirm('Delete this user?')">
+                      <input type="hidden" name="id" value="${escapeAttr(u.id)}">
+                      <button class="danger">Delete user</button>
+                    </form>
+                  ` : `<small>Current admin</small>`}
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -785,6 +921,63 @@ async function adminPage(request, env) {
       </div>
     </section>
   `, env);
+}
+
+async function adminUpdateUser(request, env) {
+  const adminUser = await requireAdmin(request, env);
+  if (adminUser instanceof Response) return adminUser;
+
+  const form = await request.formData();
+
+  const id = String(form.get("id") || "");
+  if (!id) return redirect("/admin");
+
+  const role = String(form.get("role") || "user") === "admin" ? "admin" : "user";
+  const isEnabled = form.get("is_enabled") === "1" ? 1 : 0;
+  const canModels = form.get("can_models") === "1" ? 1 : 0;
+  const canDeals = form.get("can_deals") === "1" ? 1 : 0;
+  const canStatus = form.get("can_status") === "1" ? 1 : 0;
+  const canSubscribe = form.get("can_subscribe") === "1" ? 1 : 0;
+
+  await env.DB.prepare(`
+    UPDATE users
+    SET role = ?,
+        is_enabled = ?,
+        can_models = ?,
+        can_deals = ?,
+        can_status = ?,
+        can_subscribe = ?
+    WHERE id = ?
+  `).bind(
+    role,
+    isEnabled,
+    canModels,
+    canDeals,
+    canStatus,
+    canSubscribe,
+    id
+  ).run();
+
+  if (isEnabled !== 1) {
+    await env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+  }
+
+  return redirect("/admin");
+}
+
+async function adminDeleteUser(request, env) {
+  const adminUser = await requireAdmin(request, env);
+  if (adminUser instanceof Response) return adminUser;
+
+  const form = await request.formData();
+  const id = String(form.get("id") || "");
+
+  if (!id || id === adminUser.id) return redirect("/admin");
+
+  await env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(id).run();
+
+  return redirect("/admin");
 }
 
 async function adminSavePost(request, env) {
@@ -1018,17 +1211,32 @@ async function syncServiceStatuses(env) {
   const failed = [];
 
   for (const service of STATUS_SERVICES) {
+    let data = null;
+    let lastError = "";
+
+    for (const statusUrl of service.urls || [service.url]) {
+      try {
+        const res = await fetch(statusUrl, {
+          headers: {
+            "User-Agent": "Gaband323TechWatch/1.0",
+            "Accept": "application/json"
+          }
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        data = await res.json();
+        break;
+      } catch (e) {
+        lastError = e.message;
+      }
+    }
+
     try {
-      const res = await fetch(service.url, {
-        headers: {
-          "User-Agent": "Gaband323TechWatch/1.0",
-          "Accept": "application/json"
-        }
-      });
+      if (!data) {
+        throw new Error(lastError || "No status data returned");
+      }
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
       const normalized = normalizeStatus(service, data);
 
       const existing = await env.DB.prepare(`
@@ -1072,19 +1280,21 @@ async function syncServiceStatuses(env) {
 
       await env.DB.prepare(`
         INSERT INTO service_status (id, name, status, indicator, url, checked_at, raw)
-        VALUES (?, ?, 'Unknown', 'unknown', ?, CURRENT_TIMESTAMP, ?)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
-          status = 'Unknown',
-          indicator = 'unknown',
+          status = excluded.status,
+          indicator = excluded.indicator,
           url = excluded.url,
           checked_at = CURRENT_TIMESTAMP,
           raw = excluded.raw
       `).bind(
         finalId,
         service.name,
+        "Status page unavailable",
+        "unknown",
         service.homepage,
-        JSON.stringify({ error: e.message })
+        JSON.stringify({ error: e.message }).slice(0, 10000)
       ).run();
     }
   }
@@ -1102,31 +1312,49 @@ function normalizeStatus(service, data) {
     const activeMaintenances = data.activeMaintenances || [];
 
     if (activeIncidents.length > 0) {
-      const worst = activeIncidents[0]?.impact || "INCIDENT";
+      const first = activeIncidents[0];
       return {
-        status: `Incident: ${activeIncidents[0]?.name || "Active incident"}`,
-        indicator: railwayImpactToIndicator(worst)
+        status: `Incident: ${first.name || "Active incident"}`,
+        indicator: railwayImpactToIndicator(first.impact || first.status || "minor")
       };
     }
 
     if (activeMaintenances.length > 0) {
+      const first = activeMaintenances[0];
       return {
-        status: `Maintenance: ${activeMaintenances[0]?.name || "Active maintenance"}`,
+        status: `Maintenance: ${first.name || "Active maintenance"}`,
         indicator: "maintenance"
       };
     }
 
-    const pageStatus = data.page?.status || "UP";
+    const pageStatus = String(data.page?.status || "").toUpperCase();
+
+    if (pageStatus === "UP") {
+      return {
+        status: "All Systems Operational",
+        indicator: "none"
+      };
+    }
+
+    if (pageStatus) {
+      return {
+        status: pageStatus,
+        indicator: "minor"
+      };
+    }
 
     return {
-      status: pageStatus === "UP" ? "All Systems Operational" : pageStatus,
-      indicator: pageStatus === "UP" ? "none" : "minor"
+      status: "Unknown",
+      indicator: "unknown"
     };
   }
 
+  const indicator = data.status?.indicator || "unknown";
+  const description = data.status?.description || "Unknown";
+
   return {
-    status: data.status?.description || "Unknown",
-    indicator: data.status?.indicator || "unknown"
+    status: description,
+    indicator
   };
 }
 
@@ -1283,13 +1511,19 @@ async function currentUser(request, env) {
   const sid = getCookie(request, COOKIE_NAME);
   if (!sid) return null;
 
-  return await env.DB.prepare(`
+  const user = await env.DB.prepare(`
     SELECT users.*
     FROM sessions
     JOIN users ON users.id = sessions.user_id
     WHERE sessions.id = ?
       AND sessions.expires_at > ?
   `).bind(sid, new Date().toISOString()).first();
+
+  if (user && Number(user.is_enabled ?? 1) !== 1 && user.role !== "admin") {
+    return null;
+  }
+
+  return user;
 }
 
 async function createSession(env, userId, location) {
@@ -1322,6 +1556,19 @@ async function verifyPassword(password, stored) {
   const digest = await crypto.subtle.digest("SHA-256", data);
 
   return hex(digest) === hash;
+}
+
+function userCan(user, section) {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+  if (Number(user.is_enabled ?? 1) !== 1) return false;
+
+  if (section === "models") return Number(user.can_models ?? 1) === 1;
+  if (section === "deals") return Number(user.can_deals ?? 1) === 1;
+  if (section === "status") return Number(user.can_status ?? 1) === 1;
+  if (section === "subscribe") return Number(user.can_subscribe ?? 1) === 1;
+
+  return true;
 }
 
 function hex(buffer) {
@@ -1433,10 +1680,10 @@ function htmlPage(title, body, env, status = 200) {
   const nav = `
     <nav>
       <a href="/">Home</a>
-      ${viewer ? `<a href="/models">Models</a>` : ""}
-      ${viewer ? `<a href="/deals">Deals</a>` : ""}
-      ${viewer ? `<a href="/status">Status</a>` : ""}
-      ${viewer ? `<a href="/subscribe">Subscribe</a>` : ""}
+      ${viewer && userCan(viewer, "models") ? `<a href="/models">Models</a>` : ""}
+      ${viewer && userCan(viewer, "deals") ? `<a href="/deals">Deals</a>` : ""}
+      ${viewer && userCan(viewer, "status") ? `<a href="/status">Status</a>` : ""}
+      ${viewer && userCan(viewer, "subscribe") ? `<a href="/subscribe">Subscribe</a>` : ""}
       ${viewer?.role === "admin" ? `<a href="/admin">Admin</a>` : ""}
       ${viewer ? `<a href="/logout">Logout</a>` : `<a href="/login">Login</a> <a href="/signup">Sign up</a>`}
     </nav>
@@ -1616,4 +1863,4 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
-  }
+                 }
